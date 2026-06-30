@@ -1,0 +1,40 @@
+<?php
+
+namespace App\Models;
+
+use Database\Factories\ContractTypeFactory;
+use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\SoftDeletes;
+
+#[Fillable([
+    'agency_id',
+    'name',
+    'slug',
+    'category',
+    'is_exclusive',
+    'is_custom',
+    'is_active',
+    'display_order',
+])]
+class ContractType extends Model
+{
+    /** @use HasFactory<ContractTypeFactory> */
+    use HasFactory, SoftDeletes;
+
+    protected function casts(): array
+    {
+        return [
+            'is_exclusive' => 'boolean',
+            'is_custom' => 'boolean',
+            'is_active' => 'boolean',
+        ];
+    }
+
+    public function agency(): BelongsTo
+    {
+        return $this->belongsTo(Agency::class);
+    }
+}
