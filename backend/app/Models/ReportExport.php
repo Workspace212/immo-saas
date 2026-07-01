@@ -2,6 +2,8 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\BelongsToAgency;
+
 use Database\Factories\ReportExportFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -29,7 +31,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 class ReportExport extends Model
 {
     /** @use HasFactory<ReportExportFactory> */
-    use HasFactory, SoftDeletes;
+    use BelongsToAgency, HasFactory, SoftDeletes;
 
     protected function casts(): array
     {

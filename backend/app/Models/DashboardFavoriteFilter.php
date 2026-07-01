@@ -2,6 +2,8 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\BelongsToAgency;
+
 use Database\Factories\DashboardFavoriteFilterFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -23,7 +25,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 class DashboardFavoriteFilter extends Model
 {
     /** @use HasFactory<DashboardFavoriteFilterFactory> */
-    use HasFactory, SoftDeletes;
+    use BelongsToAgency, HasFactory, SoftDeletes;
 
     protected function casts(): array
     {

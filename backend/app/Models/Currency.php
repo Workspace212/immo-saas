@@ -2,6 +2,8 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\BelongsToAgency;
+
 use Database\Factories\CurrencyFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -21,7 +23,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 class Currency extends Model
 {
     /** @use HasFactory<CurrencyFactory> */
-    use HasFactory, SoftDeletes;
+    use BelongsToAgency, HasFactory, SoftDeletes;
 
     protected function casts(): array
     {

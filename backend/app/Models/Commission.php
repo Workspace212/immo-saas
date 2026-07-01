@@ -2,6 +2,8 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\BelongsToAgency;
+
 use Database\Factories\CommissionFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -33,7 +35,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 class Commission extends Model
 {
     /** @use HasFactory<CommissionFactory> */
-    use HasFactory, SoftDeletes;
+    use BelongsToAgency, HasFactory, SoftDeletes;
 
     protected function casts(): array
     {

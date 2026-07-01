@@ -2,6 +2,8 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\BelongsToAgency;
+
 use Database\Factories\FinancialAttachmentFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -22,7 +24,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 class FinancialAttachment extends Model
 {
     /** @use HasFactory<FinancialAttachmentFactory> */
-    use HasFactory, SoftDeletes;
+    use BelongsToAgency, HasFactory, SoftDeletes;
 
     public function agency(): BelongsTo { return $this->belongsTo(Agency::class); }
     public function financialDocument(): BelongsTo { return $this->belongsTo(FinancialDocument::class); }
