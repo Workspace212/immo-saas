@@ -11,18 +11,24 @@ use App\Http\Resources\AppointmentResource;
 use App\Models\Appointment;
 use App\Models\User;
 use App\Services\AppointmentService;
+use App\Support\TenantContext;
+use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 
 class AppointmentController extends Controller
 {
+    use AuthorizesRequests;
+
     public function __construct(private readonly AppointmentService $appointmentService)
     {
     }
 
     public function index(Request $request): AnonymousResourceCollection
     {
+        $this->authorize('viewAny', Appointment::class);
+
         $query = Appointment::query()
             ->with([
                 'property',
@@ -36,6 +42,8 @@ class AppointmentController extends Controller
                 'creator',
             ])
             ->latest('start_at');
+
+        $this->applyIndexAuthorization($query, $request);
 
         foreach ([
             'status',
@@ -83,9 +91,11 @@ class AppointmentController extends Controller
 
     public function store(StoreAppointmentRequest $request): JsonResponse
     {
+        $this->authorize('create', Appointment::class);
+
         $user = $request->user();
         $appointment = $this->appointmentService->createAppointment(
-            $request->validated(),
+            $this->tenantData($request->validated(), $user),
             $user instanceof User ? $user : null,
         );
 
@@ -96,15 +106,19 @@ class AppointmentController extends Controller
 
     public function show(Appointment $appointment): AppointmentResource
     {
+        $this->authorize('view', $appointment);
+
         return new AppointmentResource($this->freshAppointment($appointment));
     }
 
     public function update(UpdateAppointmentRequest $request, Appointment $appointment): AppointmentResource
     {
+        $this->authorize('update', $appointment);
+
         $user = $request->user();
         $appointment = $this->appointmentService->updateAppointment(
             $appointment,
-            $request->validated(),
+            $this->tenantData($request->validated(), $user),
             $user instanceof User ? $user : null,
         );
 
@@ -113,6 +127,8 @@ class AppointmentController extends Controller
 
     public function destroy(Appointment $appointment): JsonResponse
     {
+        $this->authorize('delete', $appointment);
+
         $appointment->delete();
 
         return response()->json([
@@ -122,6 +138,8 @@ class AppointmentController extends Controller
 
     public function cancel(Appointment $appointment): AppointmentResource
     {
+        $this->authorize('cancel', $appointment);
+
         $user = request()->user();
 
         return new AppointmentResource($this->freshAppointment(
@@ -131,6 +149,8 @@ class AppointmentController extends Controller
 
     public function complete(Appointment $appointment): AppointmentResource
     {
+        $this->authorize('complete', $appointment);
+
         $user = request()->user();
 
         return new AppointmentResource($this->freshAppointment(
@@ -140,6 +160,8 @@ class AppointmentController extends Controller
 
     public function markNoShow(Appointment $appointment): AppointmentResource
     {
+        $this->authorize('markNoShow', $appointment);
+
         $user = request()->user();
 
         return new AppointmentResource($this->freshAppointment(
@@ -160,5 +182,94 @@ class AppointmentController extends Controller
             'collaboration',
             'creator',
         ]);
+    }
+
+    private function applyIndexAuthorization($query, Request $request): void
+    {
+        $user = $request->user();
+
+        abort_unless($user instanceof User, 401, 'Unauthenticated.');
+
+        if ($user->hasAnyRole(['manager', 'assistant'])) {
+            return;
+        }
+
+        if ($user->hasRole('agent')) {
+            $userId = (int) $user->getKey();
+
+            $query->where(function ($builder) use ($userId): void {
+                $builder->where('created_by', $userId)
+                    ->orWhereExists(function ($subquery) use ($userId): void {
+                        $subquery->selectRaw('1')
+                            ->from('appointment_participants')
+                            ->whereColumn('appointment_participants.appointment_id', 'appointments.id')
+                            ->where('appointment_participants.user_id', $userId);
+                    })
+                    ->orWhereExists(function ($subquery) use ($userId): void {
+                        $subquery->selectRaw('1')
+                            ->from('contracts')
+                            ->whereColumn('contracts.id', 'appointments.contract_id')
+                            ->where('contracts.assigned_agent_id', $userId);
+                    })
+                    ->orWhereExists(function ($subquery) use ($userId): void {
+                        $subquery->selectRaw('1')
+                            ->from('rental_units')
+                            ->whereColumn('rental_units.contract_id', 'appointments.contract_id')
+                            ->where('rental_units.assigned_agent_id', $userId);
+                    })
+                    ->orWhereExists(function ($subquery) use ($userId): void {
+                        $subquery->selectRaw('1')
+                            ->from('complaints')
+                            ->whereColumn('complaints.id', 'appointments.complaint_id')
+                            ->where(function ($complaintQuery) use ($userId): void {
+                                $complaintQuery->where('complaints.assigned_to', $userId)
+                                    ->orWhere('complaints.created_by', $userId);
+                            });
+                    })
+                    ->orWhereExists(function ($subquery) use ($userId): void {
+                        $subquery->selectRaw('1')
+                            ->from('properties')
+                            ->whereColumn('properties.id', 'appointments.property_id')
+                            ->where(function ($propertyQuery) use ($userId): void {
+                                $propertyQuery->where('properties.created_by', $userId)
+                                    ->orWhere('properties.updated_by', $userId);
+                            });
+                    })
+                    ->orWhereExists(function ($subquery) use ($userId): void {
+                        $subquery->selectRaw('1')
+                            ->from('collaborations')
+                            ->whereColumn('collaborations.id', 'appointments.collaboration_id')
+                            ->where(function ($collaborationQuery) use ($userId): void {
+                                $collaborationQuery->where('collaborations.requesting_agent_id', $userId)
+                                    ->orWhere('collaborations.owner_agent_id', $userId)
+                                    ->orWhere('collaborations.created_by', $userId);
+                            });
+                    });
+            });
+
+            return;
+        }
+
+        // TODO: employees and portal users need explicit supported appointment relationships before listing appointments.
+        $query->whereRaw('1 = 0');
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     * @return array<string, mixed>
+     */
+    private function tenantData(array $data, mixed $user): array
+    {
+        $agencyId = app(TenantContext::class)->agencyId();
+
+        if ($agencyId === null && $user instanceof User) {
+            $agencyId = $user->agency_id === null ? null : (int) $user->agency_id;
+        }
+
+        if ($agencyId !== null) {
+            $data['agency_id'] = $agencyId;
+        }
+
+        return $data;
     }
 }

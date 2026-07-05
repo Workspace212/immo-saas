@@ -12,21 +12,29 @@ use App\Models\Contract;
 use App\Models\ContractParty;
 use App\Models\User;
 use App\Services\ContractService;
+use App\Support\TenantContext;
+use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 
 class ContractController extends Controller
 {
+    use AuthorizesRequests;
+
     public function __construct(private readonly ContractService $contractService)
     {
     }
 
     public function index(Request $request): AnonymousResourceCollection
     {
+        $this->authorize('viewAny', Contract::class);
+
         $query = Contract::query()
             ->with(['property', 'creator', 'assignedAgent'])
             ->latest();
+
+        $this->applyIndexAuthorization($query, $request);
 
         foreach (['status', 'contract_type', 'property_id'] as $filter) {
             if ($request->filled($filter)) {
@@ -72,9 +80,11 @@ class ContractController extends Controller
 
     public function store(StoreContractRequest $request): JsonResponse
     {
+        $this->authorize('create', Contract::class);
+
         $user = $request->user();
         $contract = $this->contractService->createContract(
-            $request->validated(),
+            $this->tenantData($request->validated(), $user),
             $user instanceof User ? $user : null,
         );
 
@@ -85,15 +95,19 @@ class ContractController extends Controller
 
     public function show(Contract $contract): ContractResource
     {
+        $this->authorize('view', $contract);
+
         return new ContractResource($this->freshContract($contract));
     }
 
     public function update(UpdateContractRequest $request, Contract $contract): ContractResource
     {
+        $this->authorize('update', $contract);
+
         $user = $request->user();
         $contract = $this->contractService->updateContract(
             $contract,
-            $request->validated(),
+            $this->tenantData($request->validated(), $user),
             $user instanceof User ? $user : null,
         );
 
@@ -102,6 +116,8 @@ class ContractController extends Controller
 
     public function destroy(Contract $contract): JsonResponse
     {
+        $this->authorize('delete', $contract);
+
         $contract->delete();
 
         return response()->json([
@@ -111,6 +127,8 @@ class ContractController extends Controller
 
     public function renew(Contract $contract): JsonResponse
     {
+        $this->authorize('renew', $contract);
+
         $renewedContract = $this->contractService->renewContract($contract, []);
 
         return (new ContractResource($this->freshContract($renewedContract)))
@@ -120,6 +138,8 @@ class ContractController extends Controller
 
     public function archive(Contract $contract): ContractResource
     {
+        $this->authorize('archive', $contract);
+
         $contract = $this->contractService->expireContract($contract);
 
         return new ContractResource($this->freshContract($contract));
@@ -128,5 +148,80 @@ class ContractController extends Controller
     private function freshContract(Contract $contract): Contract
     {
         return $contract->refresh()->load(['property', 'creator', 'assignedAgent']);
+    }
+
+    private function applyIndexAuthorization($query, Request $request): void
+    {
+        $user = $request->user();
+
+        abort_unless($user instanceof User, 401, 'Unauthenticated.');
+
+        if ($user->hasAnyRole(['manager', 'assistant'])) {
+            return;
+        }
+
+        if ($user->hasRole('agent')) {
+            $userId = (int) $user->getKey();
+
+            $query->where(function ($builder) use ($userId): void {
+                $builder->where('assigned_agent_id', $userId)
+                    ->orWhere('created_by', $userId)
+                    ->orWhereExists(function ($subquery) use ($userId): void {
+                        $subquery->selectRaw('1')
+                            ->from('properties')
+                            ->whereColumn('properties.id', 'contracts.property_id')
+                            ->where(function ($propertyQuery) use ($userId): void {
+                                $propertyQuery->where('properties.created_by', $userId)
+                                    ->orWhere('properties.updated_by', $userId);
+                            });
+                    })
+                    ->orWhereExists(function ($subquery) use ($userId): void {
+                        $subquery->selectRaw('1')
+                            ->from('rental_units')
+                            ->whereColumn('rental_units.contract_id', 'contracts.id')
+                            ->where('rental_units.assigned_agent_id', $userId);
+                    })
+                    ->orWhereExists(function ($subquery) use ($userId): void {
+                        $subquery->selectRaw('1')
+                            ->from('complaints')
+                            ->whereColumn('complaints.property_id', 'contracts.property_id')
+                            ->where('complaints.assigned_to', $userId);
+                    })
+                    ->orWhereExists(function ($subquery) use ($userId): void {
+                        $subquery->selectRaw('1')
+                            ->from('collaborations')
+                            ->whereColumn('collaborations.property_id', 'contracts.property_id')
+                            ->where(function ($collaborationQuery) use ($userId): void {
+                                $collaborationQuery->where('collaborations.requesting_agent_id', $userId)
+                                    ->orWhere('collaborations.owner_agent_id', $userId)
+                                    ->orWhere('collaborations.created_by', $userId);
+                            });
+                    });
+            });
+
+            return;
+        }
+
+        // TODO: employees and portal users need explicit supported contract relationships before listing contracts.
+        $query->whereRaw('1 = 0');
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     * @return array<string, mixed>
+     */
+    private function tenantData(array $data, mixed $user): array
+    {
+        $agencyId = app(TenantContext::class)->agencyId();
+
+        if ($agencyId === null && $user instanceof User) {
+            $agencyId = $user->agency_id === null ? null : (int) $user->agency_id;
+        }
+
+        if ($agencyId !== null) {
+            $data['agency_id'] = $agencyId;
+        }
+
+        return $data;
     }
 }

@@ -13,21 +13,29 @@ use App\Models\RentalParty;
 use App\Models\RentalUnit;
 use App\Models\User;
 use App\Services\RentalService;
+use App\Support\TenantContext;
+use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 
 class RentalUnitController extends Controller
 {
+    use AuthorizesRequests;
+
     public function __construct(private readonly RentalService $rentalService)
     {
     }
 
     public function index(Request $request): AnonymousResourceCollection
     {
+        $this->authorize('viewAny', RentalUnit::class);
+
         $query = RentalUnit::query()
             ->with(['property', 'contract', 'creator', 'assignedAgent'])
             ->latest();
+
+        $this->applyIndexAuthorization($query, $request);
 
         foreach (['status', 'property_id', 'contract_id'] as $filter) {
             if ($request->filled($filter)) {
@@ -85,9 +93,11 @@ class RentalUnitController extends Controller
 
     public function store(StoreRentalUnitRequest $request): JsonResponse
     {
+        $this->authorize('create', RentalUnit::class);
+
         $user = $request->user();
         $rentalUnit = $this->rentalService->createRental(
-            $this->serviceData($request->validated()),
+            $this->serviceData($this->tenantData($request->validated(), $user)),
             $user instanceof User ? $user : null,
         );
 
@@ -98,15 +108,19 @@ class RentalUnitController extends Controller
 
     public function show(RentalUnit $rentalUnit): RentalUnitResource
     {
+        $this->authorize('view', $rentalUnit);
+
         return new RentalUnitResource($this->freshRentalUnit($rentalUnit));
     }
 
     public function update(UpdateRentalUnitRequest $request, RentalUnit $rentalUnit): RentalUnitResource
     {
+        $this->authorize('update', $rentalUnit);
+
         $user = $request->user();
         $rentalUnit = $this->rentalService->updateRental(
             $rentalUnit,
-            $this->serviceData($request->validated()),
+            $this->serviceData($this->tenantData($request->validated(), $user)),
             $user instanceof User ? $user : null,
         );
 
@@ -115,6 +129,8 @@ class RentalUnitController extends Controller
 
     public function destroy(RentalUnit $rentalUnit): JsonResponse
     {
+        $this->authorize('delete', $rentalUnit);
+
         $rentalUnit->delete();
 
         return response()->json([
@@ -124,6 +140,8 @@ class RentalUnitController extends Controller
 
     public function activate(RentalUnit $rentalUnit): RentalUnitResource
     {
+        $this->authorize('activate', $rentalUnit);
+
         return new RentalUnitResource($this->freshRentalUnit(
             $this->rentalService->activateRental($rentalUnit)
         ));
@@ -131,6 +149,8 @@ class RentalUnitController extends Controller
 
     public function end(RentalUnit $rentalUnit): RentalUnitResource
     {
+        $this->authorize('end', $rentalUnit);
+
         return new RentalUnitResource($this->freshRentalUnit(
             $this->rentalService->endRental($rentalUnit)
         ));
@@ -138,6 +158,8 @@ class RentalUnitController extends Controller
 
     public function cancel(RentalUnit $rentalUnit): RentalUnitResource
     {
+        $this->authorize('cancel', $rentalUnit);
+
         return new RentalUnitResource($this->freshRentalUnit(
             $this->rentalService->cancelRental($rentalUnit)
         ));
@@ -145,6 +167,8 @@ class RentalUnitController extends Controller
 
     public function renew(RentalUnit $rentalUnit): JsonResponse
     {
+        $this->authorize('renew', $rentalUnit);
+
         $renewedRental = $this->rentalService->renewRental($rentalUnit, []);
 
         return (new RentalUnitResource($this->freshRentalUnit($renewedRental)))
@@ -155,6 +179,88 @@ class RentalUnitController extends Controller
     private function freshRentalUnit(RentalUnit $rentalUnit): RentalUnit
     {
         return $rentalUnit->refresh()->load(['property', 'contract', 'creator', 'assignedAgent']);
+    }
+
+    private function applyIndexAuthorization($query, Request $request): void
+    {
+        $user = $request->user();
+
+        abort_unless($user instanceof User, 401, 'Unauthenticated.');
+
+        if ($user->hasAnyRole(['manager', 'assistant'])) {
+            return;
+        }
+
+        if ($user->hasRole('agent')) {
+            $userId = (int) $user->getKey();
+
+            $query->where(function ($builder) use ($userId): void {
+                $builder->where('assigned_agent_id', $userId)
+                    ->orWhere('created_by', $userId)
+                    ->orWhereExists(function ($subquery) use ($userId): void {
+                        $subquery->selectRaw('1')
+                            ->from('contracts')
+                            ->whereColumn('contracts.id', 'rental_units.contract_id')
+                            ->where('contracts.assigned_agent_id', $userId);
+                    })
+                    ->orWhereExists(function ($subquery) use ($userId): void {
+                        $subquery->selectRaw('1')
+                            ->from('properties')
+                            ->whereColumn('properties.id', 'rental_units.property_id')
+                            ->where(function ($propertyQuery) use ($userId): void {
+                                $propertyQuery->where('properties.created_by', $userId)
+                                    ->orWhere('properties.updated_by', $userId);
+                            });
+                    })
+                    ->orWhereExists(function ($subquery) use ($userId): void {
+                        $subquery->selectRaw('1')
+                            ->from('complaints')
+                            ->whereColumn('complaints.property_id', 'rental_units.property_id')
+                            ->where('complaints.assigned_to', $userId);
+                    })
+                    ->orWhereExists(function ($subquery) use ($userId): void {
+                        $subquery->selectRaw('1')
+                            ->from('collaborations')
+                            ->whereColumn('collaborations.property_id', 'rental_units.property_id')
+                            ->where(function ($collaborationQuery) use ($userId): void {
+                                $collaborationQuery->where('collaborations.requesting_agent_id', $userId)
+                                    ->orWhere('collaborations.owner_agent_id', $userId)
+                                    ->orWhere('collaborations.created_by', $userId);
+                            });
+                    })
+                    ->orWhereExists(function ($subquery) use ($userId): void {
+                        $subquery->selectRaw('1')
+                            ->from('rental_parties')
+                            ->join('client_property_requests', 'client_property_requests.client_id', '=', 'rental_parties.client_id')
+                            ->whereColumn('rental_parties.rental_unit_id', 'rental_units.id')
+                            ->where('client_property_requests.created_by', $userId);
+                    });
+            });
+
+            return;
+        }
+
+        // TODO: employees and portal users need explicit supported rental relationships before listing rentals.
+        $query->whereRaw('1 = 0');
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     * @return array<string, mixed>
+     */
+    private function tenantData(array $data, mixed $user): array
+    {
+        $agencyId = app(TenantContext::class)->agencyId();
+
+        if ($agencyId === null && $user instanceof User) {
+            $agencyId = $user->agency_id === null ? null : (int) $user->agency_id;
+        }
+
+        if ($agencyId !== null) {
+            $data['agency_id'] = $agencyId;
+        }
+
+        return $data;
     }
 
     /**
