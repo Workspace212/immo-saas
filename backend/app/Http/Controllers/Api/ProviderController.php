@@ -11,21 +11,28 @@ use App\Http\Resources\ProviderResource;
 use App\Models\Provider;
 use App\Models\User;
 use App\Services\ProviderService;
+use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 
 class ProviderController extends Controller
 {
+    use AuthorizesRequests;
+
     public function __construct(private readonly ProviderService $providerService)
     {
     }
 
     public function index(Request $request): AnonymousResourceCollection
     {
+        $this->authorize('viewAny', Provider::class);
+
         $query = Provider::query()
             ->with('agency')
             ->latest();
+
+        $this->applyIndexAuthorization($query, $request);
 
         foreach (['provider_type', 'city'] as $filter) {
             if ($request->filled($filter)) {
@@ -72,9 +79,11 @@ class ProviderController extends Controller
 
     public function store(StoreProviderRequest $request): JsonResponse
     {
+        $this->authorize('create', Provider::class);
+
         $user = $request->user();
         $provider = $this->providerService->create(
-            $request->validated(),
+            $this->tenantData($request->validated(), $user),
             $user instanceof User ? $user : null,
         );
 
@@ -85,15 +94,19 @@ class ProviderController extends Controller
 
     public function show(Provider $provider): ProviderResource
     {
+        $this->authorize('view', $provider);
+
         return new ProviderResource($this->freshProvider($provider));
     }
 
     public function update(UpdateProviderRequest $request, Provider $provider): ProviderResource
     {
+        $this->authorize('update', $provider);
+
         $user = $request->user();
         $provider = $this->providerService->update(
             $provider,
-            $request->validated(),
+            $this->tenantData($request->validated(), $user),
             $user instanceof User ? $user : null,
         );
 
@@ -102,6 +115,8 @@ class ProviderController extends Controller
 
     public function destroy(Provider $provider): JsonResponse
     {
+        $this->authorize('delete', $provider);
+
         $provider->delete();
 
         return response()->json([
@@ -111,6 +126,8 @@ class ProviderController extends Controller
 
     public function activate(Provider $provider): ProviderResource
     {
+        $this->authorize('update', $provider);
+
         return new ProviderResource($this->freshProvider(
             $this->providerService->activate($provider)
         ));
@@ -118,6 +135,8 @@ class ProviderController extends Controller
 
     public function deactivate(Provider $provider): ProviderResource
     {
+        $this->authorize('update', $provider);
+
         return new ProviderResource($this->freshProvider(
             $this->providerService->deactivate($provider)
         ));
@@ -126,5 +145,32 @@ class ProviderController extends Controller
     private function freshProvider(Provider $provider): Provider
     {
         return $provider->refresh()->load('agency');
+    }
+
+    private function applyIndexAuthorization($query, Request $request): void
+    {
+        $user = $request->user();
+
+        abort_unless($user instanceof User, 401, 'Unauthenticated.');
+
+        if ($user->hasAnyRole(['manager', 'assistant'])) {
+            return;
+        }
+
+        // TODO: provider policy is still closed and providers have no user/provider ownership link for safe list filtering.
+        $query->whereRaw('1 = 0');
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     * @return array<string, mixed>
+     */
+    private function tenantData(array $data, mixed $user): array
+    {
+        if ($user instanceof User) {
+            $data['agency_id'] = $user->agency_id;
+        }
+
+        return $data;
     }
 }

@@ -12,21 +12,28 @@ use App\Models\Property;
 use App\Models\PropertyActivity;
 use App\Models\User;
 use App\Services\PropertyService;
+use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 
 class PropertyController extends Controller
 {
+    use AuthorizesRequests;
+
     public function __construct(private readonly PropertyService $propertyService)
     {
     }
 
     public function index(Request $request): AnonymousResourceCollection
     {
+        $this->authorize('viewAny', Property::class);
+
         $query = Property::query()
             ->with(['propertyType', 'creator', 'updater'])
             ->latest();
+
+        $this->applyIndexAuthorization($query, $request);
 
         if ($request->filled('status')) {
             $query->where('status', $request->string('status')->toString());
@@ -74,13 +81,16 @@ class PropertyController extends Controller
 
     public function store(StorePropertyRequest $request): JsonResponse
     {
+        $this->authorize('create', Property::class);
+
         $user = $request->user();
+        $data = $this->tenantData($request->validated(), $user);
         $property = $this->propertyService->createProperty(
-            $request->validated(),
+            $data,
             $user instanceof User ? $user : null,
         );
 
-        $this->syncAdditionalRelations($property, $request->validated(), $user instanceof User ? $user : null);
+        $this->syncAdditionalRelations($property, $data, $user instanceof User ? $user : null);
 
         return (new PropertyResource($this->freshProperty($property)))
             ->response()
@@ -89,25 +99,32 @@ class PropertyController extends Controller
 
     public function show(Property $property): PropertyResource
     {
+        $this->authorize('view', $property);
+
         return new PropertyResource($this->freshProperty($property));
     }
 
     public function update(UpdatePropertyRequest $request, Property $property): PropertyResource
     {
+        $this->authorize('update', $property);
+
         $user = $request->user();
+        $data = $this->tenantData($request->validated(), $user);
         $property = $this->propertyService->updateProperty(
             $property,
-            $request->validated(),
+            $data,
             $user instanceof User ? $user : null,
         );
 
-        $this->syncAdditionalRelations($property, $request->validated(), $user instanceof User ? $user : null);
+        $this->syncAdditionalRelations($property, $data, $user instanceof User ? $user : null);
 
         return new PropertyResource($this->freshProperty($property));
     }
 
     public function destroy(Property $property): JsonResponse
     {
+        $this->authorize('delete', $property);
+
         $property->delete();
 
         return response()->json([
@@ -117,6 +134,8 @@ class PropertyController extends Controller
 
     public function archive(Property $property): PropertyResource
     {
+        $this->authorize('archive', $property);
+
         $user = request()->user();
         $property = $this->propertyService->archiveProperty($property, $user instanceof User ? $user : null);
 
@@ -126,6 +145,72 @@ class PropertyController extends Controller
     private function freshProperty(Property $property): Property
     {
         return $property->refresh()->load(['propertyType', 'creator', 'updater']);
+    }
+
+    private function applyIndexAuthorization($query, Request $request): void
+    {
+        $user = $request->user();
+
+        abort_unless($user instanceof User, 401, 'Unauthenticated.');
+
+        if ($user->hasAnyRole(['manager', 'assistant'])) {
+            return;
+        }
+
+        if ($user->hasRole('agent')) {
+            $userId = (int) $user->getKey();
+
+            $query->where(function ($builder) use ($userId): void {
+                $builder->where('created_by', $userId)
+                    ->orWhere('updated_by', $userId)
+                    ->orWhereExists(function ($subquery) use ($userId): void {
+                        $subquery->selectRaw('1')
+                            ->from('contracts')
+                            ->whereColumn('contracts.property_id', 'properties.id')
+                            ->where('contracts.assigned_agent_id', $userId);
+                    })
+                    ->orWhereExists(function ($subquery) use ($userId): void {
+                        $subquery->selectRaw('1')
+                            ->from('rental_units')
+                            ->whereColumn('rental_units.property_id', 'properties.id')
+                            ->where('rental_units.assigned_agent_id', $userId);
+                    })
+                    ->orWhereExists(function ($subquery) use ($userId): void {
+                        $subquery->selectRaw('1')
+                            ->from('complaints')
+                            ->whereColumn('complaints.property_id', 'properties.id')
+                            ->where('complaints.assigned_to', $userId);
+                    })
+                    ->orWhereExists(function ($subquery) use ($userId): void {
+                        $subquery->selectRaw('1')
+                            ->from('collaborations')
+                            ->whereColumn('collaborations.property_id', 'properties.id')
+                            ->where(function ($collaborationQuery) use ($userId): void {
+                                $collaborationQuery->where('collaborations.requesting_agent_id', $userId)
+                                    ->orWhere('collaborations.owner_agent_id', $userId)
+                                    ->orWhere('collaborations.created_by', $userId);
+                            });
+                    });
+            });
+
+            return;
+        }
+
+        // TODO: employees and portal users need explicit ownership links before listing properties.
+        $query->whereRaw('1 = 0');
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     * @return array<string, mixed>
+     */
+    private function tenantData(array $data, mixed $user): array
+    {
+        if ($user instanceof User) {
+            $data['agency_id'] = $user->agency_id;
+        }
+
+        return $data;
     }
 
     /**

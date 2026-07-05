@@ -11,22 +11,30 @@ use App\Http\Resources\OwnerResource;
 use App\Models\Contract;
 use App\Models\ContractParty;
 use App\Models\Owner;
+use App\Models\User;
 use App\Services\OwnerService;
+use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 
 class OwnerController extends Controller
 {
+    use AuthorizesRequests;
+
     public function __construct(private readonly OwnerService $ownerService)
     {
     }
 
     public function index(Request $request): AnonymousResourceCollection
     {
+        $this->authorize('viewAny', Owner::class);
+
         $query = Owner::query()
             ->with('agency')
             ->latest();
+
+        $this->applyIndexAuthorization($query, $request);
 
         if ($request->filled('owner_type')) {
             $query->where('type', $request->input('owner_type'));
@@ -88,7 +96,9 @@ class OwnerController extends Controller
 
     public function store(StoreOwnerRequest $request): JsonResponse
     {
-        $owner = $this->ownerService->create($request->validated(), $request->user());
+        $this->authorize('create', Owner::class);
+
+        $owner = $this->ownerService->create($this->tenantData($request->validated(), $request->user()), $request->user());
 
         return (new OwnerResource($this->freshOwner($owner)))
             ->response()
@@ -97,18 +107,24 @@ class OwnerController extends Controller
 
     public function show(Owner $owner): OwnerResource
     {
+        $this->authorize('view', $owner);
+
         return new OwnerResource($this->freshOwner($owner));
     }
 
     public function update(UpdateOwnerRequest $request, Owner $owner): OwnerResource
     {
-        $owner = $this->ownerService->update($owner, $request->validated(), $request->user());
+        $this->authorize('update', $owner);
+
+        $owner = $this->ownerService->update($owner, $this->tenantData($request->validated(), $request->user()), $request->user());
 
         return new OwnerResource($this->freshOwner($owner));
     }
 
     public function destroy(Owner $owner): JsonResponse
     {
+        $this->authorize('delete', $owner);
+
         $this->ownerService->delete($owner);
 
         return response()->json([
@@ -118,6 +134,8 @@ class OwnerController extends Controller
 
     public function archive(Owner $owner): OwnerResource
     {
+        $this->authorize('archive', $owner);
+
         return new OwnerResource($this->freshOwner(
             $this->ownerService->archive($owner)
         ));
@@ -125,6 +143,8 @@ class OwnerController extends Controller
 
     public function restore(Owner $owner): OwnerResource
     {
+        $this->authorize('restore', $owner);
+
         return new OwnerResource($this->freshOwner(
             $this->ownerService->restore($owner)
         ));
@@ -133,5 +153,77 @@ class OwnerController extends Controller
     private function freshOwner(Owner $owner): Owner
     {
         return $owner->refresh()->load('agency');
+    }
+
+    private function applyIndexAuthorization($query, Request $request): void
+    {
+        $user = $request->user();
+
+        abort_unless($user instanceof User, 401, 'Unauthenticated.');
+
+        if ($user->hasAnyRole(['manager', 'assistant'])) {
+            return;
+        }
+
+        if ($user->hasRole('agent')) {
+            $userId = (int) $user->getKey();
+
+            $query->whereExists(function ($subquery) use ($userId): void {
+                $subquery->selectRaw('1')
+                    ->from('property_owners')
+                    ->join('properties', 'properties.id', '=', 'property_owners.property_id')
+                    ->whereColumn('property_owners.owner_id', 'owners.id')
+                    ->where(function ($builder) use ($userId): void {
+                        $builder->where('properties.created_by', $userId)
+                            ->orWhere('properties.updated_by', $userId)
+                            ->orWhereExists(function ($contractQuery) use ($userId): void {
+                                $contractQuery->selectRaw('1')
+                                    ->from('contracts')
+                                    ->whereColumn('contracts.property_id', 'properties.id')
+                                    ->where('contracts.assigned_agent_id', $userId);
+                            })
+                            ->orWhereExists(function ($rentalQuery) use ($userId): void {
+                                $rentalQuery->selectRaw('1')
+                                    ->from('rental_units')
+                                    ->whereColumn('rental_units.property_id', 'properties.id')
+                                    ->where('rental_units.assigned_agent_id', $userId);
+                            })
+                            ->orWhereExists(function ($complaintQuery) use ($userId): void {
+                                $complaintQuery->selectRaw('1')
+                                    ->from('complaints')
+                                    ->whereColumn('complaints.property_id', 'properties.id')
+                                    ->where('complaints.assigned_to', $userId);
+                            })
+                            ->orWhereExists(function ($collaborationQuery) use ($userId): void {
+                                $collaborationQuery->selectRaw('1')
+                                    ->from('collaborations')
+                                    ->whereColumn('collaborations.property_id', 'properties.id')
+                                    ->where(function ($collaborationBuilder) use ($userId): void {
+                                        $collaborationBuilder->where('collaborations.requesting_agent_id', $userId)
+                                            ->orWhere('collaborations.owner_agent_id', $userId)
+                                            ->orWhere('collaborations.created_by', $userId);
+                                    });
+                            });
+                    });
+            });
+
+            return;
+        }
+
+        // TODO: employees and owner portal users need explicit user-owner links before listing owners.
+        $query->whereRaw('1 = 0');
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     * @return array<string, mixed>
+     */
+    private function tenantData(array $data, mixed $user): array
+    {
+        if ($user instanceof User) {
+            $data['agency_id'] = $user->agency_id;
+        }
+
+        return $data;
     }
 }
