@@ -11,21 +11,29 @@ use App\Http\Resources\CollaborationResource;
 use App\Models\Collaboration;
 use App\Models\User;
 use App\Services\CollaborationService;
+use App\Support\TenantContext;
+use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 
 class CollaborationController extends Controller
 {
+    use AuthorizesRequests;
+
     public function __construct(private readonly CollaborationService $collaborationService)
     {
     }
 
     public function index(Request $request): AnonymousResourceCollection
     {
+        $this->authorize('viewAny', Collaboration::class);
+
         $query = Collaboration::query()
             ->with(['property', 'client', 'requestingAgent', 'ownerAgent', 'creator'])
             ->latest();
+
+        $this->applyIndexAuthorization($query, $request);
 
         foreach ([
             'status',
@@ -68,9 +76,11 @@ class CollaborationController extends Controller
 
     public function store(StoreCollaborationRequest $request): JsonResponse
     {
+        $this->authorize('create', Collaboration::class);
+
         $user = $request->user();
         $collaboration = $this->collaborationService->createCollaboration(
-            $request->validated(),
+            $this->tenantData($request->validated(), $user),
             $user instanceof User ? $user : null,
         );
 
@@ -81,15 +91,19 @@ class CollaborationController extends Controller
 
     public function show(Collaboration $collaboration): CollaborationResource
     {
+        $this->authorize('view', $collaboration);
+
         return new CollaborationResource($this->freshCollaboration($collaboration));
     }
 
     public function update(UpdateCollaborationRequest $request, Collaboration $collaboration): CollaborationResource
     {
+        $this->authorize('update', $collaboration);
+
         $user = $request->user();
         $collaboration = $this->collaborationService->updateCollaboration(
             $collaboration,
-            $request->validated(),
+            $this->tenantData($request->validated(), $user),
             $user instanceof User ? $user : null,
         );
 
@@ -98,6 +112,8 @@ class CollaborationController extends Controller
 
     public function destroy(Collaboration $collaboration): JsonResponse
     {
+        $this->authorize('delete', $collaboration);
+
         $collaboration->delete();
 
         return response()->json([
@@ -107,6 +123,8 @@ class CollaborationController extends Controller
 
     public function accept(Collaboration $collaboration): CollaborationResource
     {
+        $this->authorize('accept', $collaboration);
+
         $user = request()->user();
 
         return new CollaborationResource($this->freshCollaboration(
@@ -116,6 +134,8 @@ class CollaborationController extends Controller
 
     public function reject(Collaboration $collaboration): CollaborationResource
     {
+        $this->authorize('reject', $collaboration);
+
         $user = request()->user();
         $reason = (string) request()->input('reason', request()->input('rejection_reason', 'Rejected'));
 
@@ -126,6 +146,8 @@ class CollaborationController extends Controller
 
     public function cancel(Collaboration $collaboration): CollaborationResource
     {
+        $this->authorize('cancel', $collaboration);
+
         $user = request()->user();
 
         return new CollaborationResource($this->freshCollaboration(
@@ -135,6 +157,8 @@ class CollaborationController extends Controller
 
     public function complete(Collaboration $collaboration): CollaborationResource
     {
+        $this->authorize('complete', $collaboration);
+
         $user = request()->user();
 
         return new CollaborationResource($this->freshCollaboration(
@@ -144,6 +168,8 @@ class CollaborationController extends Controller
 
     public function addMessage(Collaboration $collaboration): JsonResponse
     {
+        $this->authorize('addMessage', $collaboration);
+
         $user = request()->user();
         $message = $this->collaborationService->addMessage(
             $collaboration,
@@ -157,6 +183,8 @@ class CollaborationController extends Controller
 
     public function addDocument(Collaboration $collaboration): JsonResponse
     {
+        $this->authorize('addDocument', $collaboration);
+
         $user = request()->user();
         $document = $this->collaborationService->addDocument(
             $collaboration,
@@ -169,6 +197,8 @@ class CollaborationController extends Controller
 
     public function scheduleVisit(Collaboration $collaboration): JsonResponse
     {
+        $this->authorize('scheduleVisit', $collaboration);
+
         $user = request()->user();
         $visit = $this->collaborationService->scheduleVisit(
             $collaboration,
@@ -181,6 +211,8 @@ class CollaborationController extends Controller
 
     public function submitOffer(Collaboration $collaboration): JsonResponse
     {
+        $this->authorize('submitOffer', $collaboration);
+
         $user = request()->user();
         $offer = $this->collaborationService->submitOffer(
             $collaboration,
@@ -194,5 +226,50 @@ class CollaborationController extends Controller
     private function freshCollaboration(Collaboration $collaboration): Collaboration
     {
         return $collaboration->refresh()->load(['property', 'client', 'requestingAgent', 'ownerAgent', 'creator']);
+    }
+
+    private function applyIndexAuthorization($query, Request $request): void
+    {
+        $user = $request->user();
+
+        abort_unless($user instanceof User, 401, 'Unauthenticated.');
+
+        if ($user->hasAnyRole(['manager', 'assistant'])) {
+            return;
+        }
+
+        if ($user->hasRole('agent')) {
+            $userId = (int) $user->getKey();
+
+            $query->where(function ($builder) use ($userId): void {
+                $builder->where('requesting_agent_id', $userId)
+                    ->orWhere('owner_agent_id', $userId)
+                    ->orWhere('created_by', $userId);
+            });
+
+            return;
+        }
+
+        // TODO: employees and portal users need explicit collaboration participation links before listing collaborations.
+        $query->whereRaw('1 = 0');
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     * @return array<string, mixed>
+     */
+    private function tenantData(array $data, mixed $user): array
+    {
+        $agencyId = app(TenantContext::class)->agencyId();
+
+        if ($agencyId === null && $user instanceof User) {
+            $agencyId = $user->agency_id === null ? null : (int) $user->agency_id;
+        }
+
+        if ($agencyId !== null) {
+            $data['agency_id'] = $agencyId;
+        }
+
+        return $data;
     }
 }

@@ -12,6 +12,8 @@ use App\Models\AppNotification;
 use App\Models\NotificationQueue;
 use App\Models\User;
 use App\Services\NotificationService;
+use App\Support\TenantContext;
+use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -19,15 +21,21 @@ use Illuminate\Support\Facades\DB;
 
 class NotificationController extends Controller
 {
+    use AuthorizesRequests;
+
     public function __construct(private readonly NotificationService $notificationService)
     {
     }
 
     public function index(Request $request): AnonymousResourceCollection
     {
+        $this->authorize('viewAny', AppNotification::class);
+
         $query = AppNotification::query()
             ->with(['creator', 'user'])
             ->latest();
+
+        $this->applyIndexAuthorization($query, $request);
 
         foreach (['status', 'priority', 'type', 'created_by'] as $filter) {
             if ($request->filled($filter)) {
@@ -80,7 +88,9 @@ class NotificationController extends Controller
 
     public function store(StoreNotificationRequest $request): JsonResponse
     {
-        $data = $this->notificationData($request->validated());
+        $this->authorize('create', AppNotification::class);
+
+        $data = $this->tenantData($this->notificationData($request->validated()), $request->user());
         $recipient = $this->recipientUser($data, $request);
 
         $notification = $this->notificationService->notifyUser($recipient, $data, $request->user());
@@ -96,14 +106,18 @@ class NotificationController extends Controller
 
     public function show(AppNotification $notification): AppNotificationResource
     {
+        $this->authorize('view', $notification);
+
         return new AppNotificationResource($notification->load(['creator', 'user']));
     }
 
     public function update(UpdateNotificationRequest $request, AppNotification $notification): AppNotificationResource
     {
+        $this->authorize('update', $notification);
+
         $updated = DB::transaction(function () use ($request, $notification): AppNotification {
             // TODO: Move mutable notification workflow into NotificationService when status rules are finalized.
-            $notification->fill($this->appNotificationData($this->notificationData($request->validated())));
+            $notification->fill($this->appNotificationData($this->tenantData($this->notificationData($request->validated()), $request->user())));
             $notification->save();
 
             return $notification->refresh();
@@ -114,6 +128,8 @@ class NotificationController extends Controller
 
     public function destroy(AppNotification $notification): JsonResponse
     {
+        $this->authorize('delete', $notification);
+
         DB::transaction(function () use ($notification): void {
             // TODO: Enforce retention rules for audit-critical notifications.
             $notification->delete();
@@ -124,6 +140,8 @@ class NotificationController extends Controller
 
     public function markAsRead(AppNotification $notification): AppNotificationResource
     {
+        $this->authorize('markAsRead', $notification);
+
         return new AppNotificationResource(
             $this->notificationService->markAsRead($notification)->load(['creator', 'user'])
         );
@@ -131,6 +149,8 @@ class NotificationController extends Controller
 
     public function markAllAsRead(Request $request): JsonResponse
     {
+        $this->authorize('markAllAsRead', AppNotification::class);
+
         $user = $request->user();
 
         abort_if(! $user instanceof User, 401, 'Unauthenticated.');
@@ -153,6 +173,8 @@ class NotificationController extends Controller
 
     public function archive(AppNotification $notification): AppNotificationResource
     {
+        $this->authorize('archive', $notification);
+
         return new AppNotificationResource(
             $this->notificationService->archive($notification)->load(['creator', 'user'])
         );
@@ -160,6 +182,8 @@ class NotificationController extends Controller
 
     public function restore(AppNotification $notification): AppNotificationResource
     {
+        $this->authorize('restore', $notification);
+
         $restored = $this->notificationService->markAsUnread($notification);
 
         return new AppNotificationResource($restored->load(['creator', 'user']));
@@ -167,6 +191,8 @@ class NotificationController extends Controller
 
     public function sendNow(AppNotification $notification): JsonResponse
     {
+        $this->authorize('sendNow', $notification);
+
         $queue = $this->notificationService->queueNotification($this->queueData($notification, is_array($notification->data) ? $notification->data : []));
         $sent = $this->notificationService->sendQueued($queue);
 
@@ -177,11 +203,46 @@ class NotificationController extends Controller
 
     public function queue(AppNotification $notification): JsonResponse
     {
+        $this->authorize('queue', $notification);
+
         $queue = $this->notificationService->queueNotification($this->queueData($notification, is_array($notification->data) ? $notification->data : []));
 
         return response()->json([
             'data' => $queue,
         ], 201);
+    }
+
+    private function applyIndexAuthorization($query, Request $request): void
+    {
+        $user = $request->user();
+
+        abort_unless($user instanceof User, 401, 'Unauthenticated.');
+
+        if ($user->hasAnyRole(['manager', 'assistant', 'employee'])) {
+            return;
+        }
+
+        // TODO: current AppNotificationPolicy denies agent/external viewAny; keep non-admin listings closed.
+        $query->whereRaw('1 = 0');
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     * @return array<string, mixed>
+     */
+    private function tenantData(array $data, mixed $user): array
+    {
+        $agencyId = app(TenantContext::class)->agencyId();
+
+        if ($agencyId === null && $user instanceof User) {
+            $agencyId = $user->agency_id === null ? null : (int) $user->agency_id;
+        }
+
+        if ($agencyId !== null) {
+            $data['agency_id'] = $agencyId;
+        }
+
+        return $data;
     }
 
     /**

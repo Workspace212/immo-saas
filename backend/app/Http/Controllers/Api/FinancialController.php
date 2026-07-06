@@ -9,7 +9,10 @@ use App\Http\Requests\StoreFinancialTransactionRequest;
 use App\Http\Requests\UpdateFinancialTransactionRequest;
 use App\Http\Resources\FinancialTransactionResource;
 use App\Models\FinancialTransaction;
+use App\Models\User;
 use App\Services\FinancialService;
+use App\Support\TenantContext;
+use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -18,16 +21,22 @@ use Illuminate\Support\Facades\DB;
 
 class FinancialController extends Controller
 {
+    use AuthorizesRequests;
+
     public function __construct(private readonly FinancialService $financialService)
     {
     }
 
     public function index(Request $request): AnonymousResourceCollection
     {
+        $this->authorize('viewAny', FinancialTransaction::class);
+
         $query = FinancialTransaction::query()
             ->with(['sourceAccount', 'destinationAccount', 'financialCategory', 'revenueCenter.property', 'creator', 'validator'])
             ->latest('transaction_date')
             ->latest('id');
+
+        $this->applyIndexAuthorization($query, $request);
 
         if ($request->filled('account')) {
             $accountId = $request->integer('account');
@@ -80,7 +89,9 @@ class FinancialController extends Controller
 
     public function store(StoreFinancialTransactionRequest $request): JsonResponse
     {
-        $data = $this->normalizeTransactionData($request->validated());
+        $this->authorize('create', FinancialTransaction::class);
+
+        $data = $this->tenantData($this->normalizeTransactionData($request->validated()), $request->user());
         $data['created_by'] ??= $request->user()?->getKey();
 
         $transaction = $this->financialService->createFinancialTransaction($data);
@@ -92,6 +103,8 @@ class FinancialController extends Controller
 
     public function show(FinancialTransaction $financialTransaction): FinancialTransactionResource
     {
+        $this->authorize('view', $financialTransaction);
+
         return new FinancialTransactionResource(
             $financialTransaction->load(['sourceAccount', 'destinationAccount', 'financialCategory', 'revenueCenter.property', 'creator', 'validator'])
         );
@@ -99,9 +112,11 @@ class FinancialController extends Controller
 
     public function update(UpdateFinancialTransactionRequest $request, FinancialTransaction $financialTransaction): FinancialTransactionResource
     {
+        $this->authorize('update', $financialTransaction);
+
         $transaction = DB::transaction(function () use ($request, $financialTransaction): FinancialTransaction {
             // TODO: Move update workflow into FinancialService when posting and audit rules are finalized.
-            $financialTransaction->fill($this->normalizeTransactionData($request->validated()));
+            $financialTransaction->fill($this->tenantData($this->normalizeTransactionData($request->validated()), $request->user()));
             $financialTransaction->save();
 
             return $financialTransaction->refresh();
@@ -114,6 +129,8 @@ class FinancialController extends Controller
 
     public function destroy(FinancialTransaction $financialTransaction): JsonResponse
     {
+        $this->authorize('delete', $financialTransaction);
+
         DB::transaction(function () use ($financialTransaction): void {
             // TODO: Prevent deletion of validated, reconciled, or closed-period transactions.
             $financialTransaction->delete();
@@ -124,6 +141,8 @@ class FinancialController extends Controller
 
     public function validateTransaction(FinancialTransaction $financialTransaction): FinancialTransactionResource
     {
+        $this->authorize('validateTransaction', $financialTransaction);
+
         $transaction = DB::transaction(function () use ($financialTransaction): FinancialTransaction {
             // TODO: Post transaction to account balances and enforce validation authorization.
             $financialTransaction->fill([
@@ -143,6 +162,8 @@ class FinancialController extends Controller
 
     public function cancelTransaction(FinancialTransaction $financialTransaction): FinancialTransactionResource
     {
+        $this->authorize('cancelTransaction', $financialTransaction);
+
         $transaction = DB::transaction(function () use ($financialTransaction): FinancialTransaction {
             // TODO: Reverse posted balances and require cancellation reason when accounting rules are finalized.
             $financialTransaction->fill(['status' => 'cancelled']);
@@ -158,13 +179,15 @@ class FinancialController extends Controller
 
     public function closePeriod(Request $request): JsonResponse
     {
+        $this->authorize('closePeriod', FinancialTransaction::class);
+
         $validated = $request->validate([
-            'agency_id' => ['required', 'integer', 'exists:agencies,id'],
             'date' => ['required', 'date'],
         ]);
+        $agencyId = $this->tenantAgencyId($request);
 
         $closing = $this->financialService->closeFinancialPeriod(
-            (int) $validated['agency_id'],
+            $agencyId,
             Carbon::parse($validated['date']),
             $request->user()
         );
@@ -176,16 +199,63 @@ class FinancialController extends Controller
 
     public function dashboard(Request $request): JsonResponse
     {
-        $validated = $request->validate([
-            'agency_id' => ['required', 'integer', 'exists:agencies,id'],
-        ]);
+        $this->authorize('dashboard', FinancialTransaction::class);
+
+        $agencyId = $this->tenantAgencyId($request);
 
         return response()->json([
             'data' => [
-                'balance' => $this->financialService->calculateAgencyBalance((int) $validated['agency_id']),
-                'kpis' => $this->financialService->generateFinancialKPIs((int) $validated['agency_id']),
+                'balance' => $this->financialService->calculateAgencyBalance($agencyId),
+                'kpis' => $this->financialService->generateFinancialKPIs($agencyId),
             ],
         ]);
+    }
+
+    private function applyIndexAuthorization($query, Request $request): void
+    {
+        $user = $request->user();
+
+        abort_unless($user instanceof User, 401, 'Unauthenticated.');
+
+        if ($user->hasAnyRole(['manager', 'assistant', 'employee'])) {
+            return;
+        }
+
+        // TODO: financial transactions do not expose safe agent/external relationship filters yet.
+        $query->whereRaw('1 = 0');
+    }
+
+    private function tenantAgencyId(Request $request): int
+    {
+        $agencyId = app(TenantContext::class)->agencyId();
+        $user = $request->user();
+
+        if ($agencyId === null && $user instanceof User) {
+            $agencyId = $user->agency_id === null ? null : (int) $user->agency_id;
+        }
+
+        abort_if($agencyId === null, 403, 'Tenant agency is required.');
+
+        return $agencyId;
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     * @return array<string, mixed>
+     */
+    private function tenantData(array $data, mixed $user): array
+    {
+        $agencyId = app(TenantContext::class)->agencyId();
+
+        if ($agencyId === null && $user instanceof User) {
+            $agencyId = $user->agency_id === null ? null : (int) $user->agency_id;
+        }
+
+        if ($agencyId !== null) {
+            $data['agency_id'] = $agencyId;
+        }
+
+        return $data;
     }
 
     /**
