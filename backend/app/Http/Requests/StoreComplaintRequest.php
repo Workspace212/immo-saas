@@ -4,13 +4,17 @@ declare(strict_types=1);
 
 namespace App\Http\Requests;
 
+use App\Http\Requests\Concerns\UsesTenantValidationRules;
+use App\Models\Complaint;
 use Illuminate\Foundation\Http\FormRequest;
 
 class StoreComplaintRequest extends FormRequest
 {
+    use UsesTenantValidationRules;
+
     public function authorize(): bool
     {
-        return true;
+        return $this->user()?->can('create', Complaint::class) ?? false;
     }
 
     /**
@@ -19,10 +23,10 @@ class StoreComplaintRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'agency_id' => ['required', 'integer', 'exists:agencies,id'],
-            'property_id' => ['required', 'integer', 'exists:properties,id'],
-            'client_id' => ['nullable', 'integer', 'exists:clients,id'],
-            'assigned_to' => ['nullable', 'integer', 'exists:users,id'],
+            'agency_id' => ['prohibited'],
+            'property_id' => ['required', 'integer', $this->tenantExists('properties')],
+            'client_id' => ['nullable', 'integer', $this->tenantExists('clients')],
+            'assigned_to' => ['nullable', 'integer', $this->sameAgencyUserExists()],
             'complaint_number' => ['nullable', 'string', 'max:255'],
             'complaint_type' => ['required', 'string', 'max:255'],
             'title' => ['required', 'string', 'max:255'],
@@ -41,7 +45,7 @@ class StoreComplaintRequest extends FormRequest
             'documents.*.original_name' => ['required_with:documents', 'string', 'max:255'],
             'documents.*.notes' => ['nullable', 'string'],
             'providers' => ['nullable', 'array'],
-            'providers.*.provider_id' => ['required_with:providers', 'integer', 'exists:providers,id'],
+            'providers.*.provider_id' => ['required_with:providers', 'integer', $this->tenantExists('providers')],
             'providers.*.assigned_at' => ['nullable', 'date'],
             'providers.*.intervention_date' => ['nullable', 'date'],
             'providers.*.status' => ['nullable', 'string', 'max:255'],

@@ -4,13 +4,20 @@ declare(strict_types=1);
 
 namespace App\Http\Requests;
 
+use App\Http\Requests\Concerns\UsesTenantValidationRules;
+use App\Models\Complaint;
 use Illuminate\Foundation\Http\FormRequest;
 
 class UpdateComplaintRequest extends FormRequest
 {
+    use UsesTenantValidationRules;
+
     public function authorize(): bool
     {
-        return true;
+        $complaint = $this->route('complaint');
+
+        return $complaint instanceof Complaint
+            && ($this->user()?->can('update', $complaint) ?? false);
     }
 
     /**
@@ -19,10 +26,10 @@ class UpdateComplaintRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'agency_id' => ['sometimes', 'integer', 'exists:agencies,id'],
-            'property_id' => ['sometimes', 'nullable', 'integer', 'exists:properties,id'],
-            'client_id' => ['sometimes', 'nullable', 'integer', 'exists:clients,id'],
-            'assigned_to' => ['sometimes', 'nullable', 'integer', 'exists:users,id'],
+            'agency_id' => ['prohibited'],
+            'property_id' => ['sometimes', 'nullable', 'integer', $this->tenantExists('properties')],
+            'client_id' => ['sometimes', 'nullable', 'integer', $this->tenantExists('clients')],
+            'assigned_to' => ['sometimes', 'nullable', 'integer', $this->sameAgencyUserExists()],
             'complaint_number' => ['sometimes', 'nullable', 'string', 'max:255'],
             'complaint_type' => ['sometimes', 'nullable', 'string', 'max:255'],
             'title' => ['sometimes', 'nullable', 'string', 'max:255'],
@@ -41,7 +48,7 @@ class UpdateComplaintRequest extends FormRequest
             'documents.*.original_name' => ['required_with:documents', 'string', 'max:255'],
             'documents.*.notes' => ['nullable', 'string'],
             'providers' => ['sometimes', 'nullable', 'array'],
-            'providers.*.provider_id' => ['required_with:providers', 'integer', 'exists:providers,id'],
+            'providers.*.provider_id' => ['required_with:providers', 'integer', $this->tenantExists('providers')],
             'providers.*.assigned_at' => ['nullable', 'date'],
             'providers.*.intervention_date' => ['nullable', 'date'],
             'providers.*.status' => ['nullable', 'string', 'max:255'],

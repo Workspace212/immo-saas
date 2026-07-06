@@ -4,13 +4,17 @@ declare(strict_types=1);
 
 namespace App\Http\Requests;
 
+use App\Http\Requests\Concerns\UsesTenantValidationRules;
+use App\Models\FinancialTransaction;
 use Illuminate\Foundation\Http\FormRequest;
 
 class StoreFinancialTransactionRequest extends FormRequest
 {
+    use UsesTenantValidationRules;
+
     public function authorize(): bool
     {
-        return true;
+        return $this->user()?->can('create', FinancialTransaction::class) ?? false;
     }
 
     /**
@@ -19,13 +23,13 @@ class StoreFinancialTransactionRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'agency_id' => ['required', 'integer', 'exists:agencies,id'],
-            'source_account_id' => ['nullable', 'integer', 'exists:financial_accounts,id'],
-            'destination_account_id' => ['nullable', 'integer', 'exists:financial_accounts,id'],
-            'financial_category_id' => ['nullable', 'integer', 'exists:financial_categories,id'],
-            'revenue_center_id' => ['nullable', 'integer', 'exists:revenue_centers,id'],
-            'created_by' => ['nullable', 'integer', 'exists:users,id'],
-            'validated_by' => ['nullable', 'integer', 'exists:users,id'],
+            'agency_id' => ['prohibited'],
+            'source_account_id' => ['nullable', 'integer', $this->tenantExists('financial_accounts')],
+            'destination_account_id' => ['nullable', 'integer', $this->tenantExists('financial_accounts')],
+            'financial_category_id' => ['nullable', 'integer', $this->globalOrTenantExists('financial_categories')],
+            'revenue_center_id' => ['nullable', 'integer', $this->tenantExists('revenue_centers')],
+            'created_by' => ['nullable', 'integer', $this->sameAgencyUserExists()],
+            'validated_by' => ['nullable', 'integer', $this->sameAgencyUserExists()],
             'transaction_number' => ['nullable', 'string', 'max:255'],
             'transaction_type' => ['required_without:transaction.type', 'string', 'max:255'],
             'transaction_date' => ['nullable', 'date'],
@@ -52,10 +56,10 @@ class StoreFinancialTransactionRequest extends FormRequest
             'tax.rate' => ['nullable', 'numeric', 'min:0'],
             'tax.amount' => ['nullable', 'numeric', 'min:0'],
             'category' => ['nullable', 'array'],
-            'category.id' => ['nullable', 'integer', 'exists:financial_categories,id'],
+            'category.id' => ['nullable', 'integer', $this->globalOrTenantExists('financial_categories')],
             'account' => ['nullable', 'array'],
-            'account.source_id' => ['nullable', 'integer', 'exists:financial_accounts,id'],
-            'account.destination_id' => ['nullable', 'integer', 'exists:financial_accounts,id'],
+            'account.source_id' => ['nullable', 'integer', $this->tenantExists('financial_accounts')],
+            'account.destination_id' => ['nullable', 'integer', $this->tenantExists('financial_accounts')],
         ];
     }
 }

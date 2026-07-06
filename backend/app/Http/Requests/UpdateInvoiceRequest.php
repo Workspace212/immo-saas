@@ -4,13 +4,17 @@ declare(strict_types=1);
 
 namespace App\Http\Requests;
 
+use App\Models\Invoice;
 use Illuminate\Foundation\Http\FormRequest;
 
 class UpdateInvoiceRequest extends FormRequest
 {
     public function authorize(): bool
     {
-        return true;
+        $invoice = $this->route('invoice');
+
+        return $invoice instanceof Invoice
+            && ($this->user()?->can('update', $invoice) ?? false);
     }
 
     /**
@@ -24,7 +28,7 @@ class UpdateInvoiceRequest extends FormRequest
             $rules[$field] = array_merge(['sometimes'], array_values(array_diff($fieldRules, ['required'])));
         }
 
-        $rules['agency_id'] = ['sometimes', 'integer', 'exists:agencies,id'];
+        $rules['agency_id'] = ['prohibited'];
 
         return $rules;
     }

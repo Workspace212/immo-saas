@@ -4,13 +4,17 @@ declare(strict_types=1);
 
 namespace App\Http\Requests;
 
+use App\Http\Requests\Concerns\UsesTenantValidationRules;
+use App\Models\Invoice;
 use Illuminate\Foundation\Http\FormRequest;
 
 class StoreInvoiceRequest extends FormRequest
 {
+    use UsesTenantValidationRules;
+
     public function authorize(): bool
     {
-        return true;
+        return $this->user()?->can('create', Invoice::class) ?? false;
     }
 
     /**
@@ -19,11 +23,11 @@ class StoreInvoiceRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'agency_id' => ['required', 'integer', 'exists:agencies,id'],
-            'client_id' => ['nullable', 'integer', 'exists:clients,id'],
-            'owner_id' => ['nullable', 'integer', 'exists:owners,id'],
-            'contract_id' => ['nullable', 'integer', 'exists:contracts,id'],
-            'financial_transaction_id' => ['nullable', 'integer', 'exists:financial_transactions,id'],
+            'agency_id' => ['prohibited'],
+            'client_id' => ['nullable', 'integer', $this->tenantExists('clients')],
+            'owner_id' => ['nullable', 'integer', $this->tenantExists('owners')],
+            'contract_id' => ['nullable', 'integer', $this->tenantExists('contracts')],
+            'financial_transaction_id' => ['nullable', 'integer', $this->tenantExists('financial_transactions')],
             'invoice_number' => ['nullable', 'string', 'max:255'],
             'status' => ['nullable', 'string', 'max:255'],
             'issued_at' => ['nullable', 'date'],
@@ -47,8 +51,8 @@ class StoreInvoiceRequest extends FormRequest
             'lines.*.line_total' => ['nullable', 'numeric', 'min:0'],
             'lines.*.display_order' => ['nullable', 'integer', 'min:0'],
             'payments' => ['nullable', 'array'],
-            'payments.*.financial_account_id' => ['nullable', 'integer', 'exists:financial_accounts,id'],
-            'payments.*.received_by' => ['nullable', 'integer', 'exists:users,id'],
+            'payments.*.financial_account_id' => ['nullable', 'integer', $this->tenantExists('financial_accounts')],
+            'payments.*.received_by' => ['nullable', 'integer', $this->sameAgencyUserExists()],
             'payments.*.payment_number' => ['nullable', 'string', 'max:255'],
             'payments.*.payment_date' => ['nullable', 'date'],
             'payments.*.amount' => ['required_with:payments', 'numeric', 'min:0'],

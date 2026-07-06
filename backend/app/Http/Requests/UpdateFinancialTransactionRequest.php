@@ -4,13 +4,20 @@ declare(strict_types=1);
 
 namespace App\Http\Requests;
 
+use App\Http\Requests\Concerns\UsesTenantValidationRules;
+use App\Models\FinancialTransaction;
 use Illuminate\Foundation\Http\FormRequest;
 
 class UpdateFinancialTransactionRequest extends FormRequest
 {
+    use UsesTenantValidationRules;
+
     public function authorize(): bool
     {
-        return true;
+        $financialTransaction = $this->route('financialTransaction');
+
+        return $financialTransaction instanceof FinancialTransaction
+            && ($this->user()?->can('update', $financialTransaction) ?? false);
     }
 
     /**
@@ -19,13 +26,13 @@ class UpdateFinancialTransactionRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'agency_id' => ['sometimes', 'integer', 'exists:agencies,id'],
-            'source_account_id' => ['sometimes', 'nullable', 'integer', 'exists:financial_accounts,id'],
-            'destination_account_id' => ['sometimes', 'nullable', 'integer', 'exists:financial_accounts,id'],
-            'financial_category_id' => ['sometimes', 'nullable', 'integer', 'exists:financial_categories,id'],
-            'revenue_center_id' => ['sometimes', 'nullable', 'integer', 'exists:revenue_centers,id'],
-            'created_by' => ['sometimes', 'nullable', 'integer', 'exists:users,id'],
-            'validated_by' => ['sometimes', 'nullable', 'integer', 'exists:users,id'],
+            'agency_id' => ['prohibited'],
+            'source_account_id' => ['sometimes', 'nullable', 'integer', $this->tenantExists('financial_accounts')],
+            'destination_account_id' => ['sometimes', 'nullable', 'integer', $this->tenantExists('financial_accounts')],
+            'financial_category_id' => ['sometimes', 'nullable', 'integer', $this->globalOrTenantExists('financial_categories')],
+            'revenue_center_id' => ['sometimes', 'nullable', 'integer', $this->tenantExists('revenue_centers')],
+            'created_by' => ['sometimes', 'nullable', 'integer', $this->sameAgencyUserExists()],
+            'validated_by' => ['sometimes', 'nullable', 'integer', $this->sameAgencyUserExists()],
             'transaction_number' => ['sometimes', 'nullable', 'string', 'max:255'],
             'transaction_type' => ['sometimes', 'string', 'max:255'],
             'transaction_date' => ['sometimes', 'nullable', 'date'],
@@ -52,10 +59,10 @@ class UpdateFinancialTransactionRequest extends FormRequest
             'tax.rate' => ['sometimes', 'nullable', 'numeric', 'min:0'],
             'tax.amount' => ['sometimes', 'nullable', 'numeric', 'min:0'],
             'category' => ['sometimes', 'nullable', 'array'],
-            'category.id' => ['sometimes', 'nullable', 'integer', 'exists:financial_categories,id'],
+            'category.id' => ['sometimes', 'nullable', 'integer', $this->globalOrTenantExists('financial_categories')],
             'account' => ['sometimes', 'nullable', 'array'],
-            'account.source_id' => ['sometimes', 'nullable', 'integer', 'exists:financial_accounts,id'],
-            'account.destination_id' => ['sometimes', 'nullable', 'integer', 'exists:financial_accounts,id'],
+            'account.source_id' => ['sometimes', 'nullable', 'integer', $this->tenantExists('financial_accounts')],
+            'account.destination_id' => ['sometimes', 'nullable', 'integer', $this->tenantExists('financial_accounts')],
         ];
     }
 }
