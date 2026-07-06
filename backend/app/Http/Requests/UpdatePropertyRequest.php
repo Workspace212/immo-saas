@@ -4,13 +4,20 @@ declare(strict_types=1);
 
 namespace App\Http\Requests;
 
+use App\Http\Requests\Concerns\UsesTenantValidationRules;
+use App\Models\Property;
 use Illuminate\Foundation\Http\FormRequest;
 
 class UpdatePropertyRequest extends FormRequest
 {
+    use UsesTenantValidationRules;
+
     public function authorize(): bool
     {
-        return true;
+        $property = $this->route('property');
+
+        return $property instanceof Property
+            && ($this->user()?->can('update', $property) ?? false);
     }
 
     /**
@@ -19,8 +26,8 @@ class UpdatePropertyRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'agency_id' => ['sometimes', 'integer', 'exists:agencies,id'],
-            'property_type_id' => ['sometimes', 'nullable', 'integer', 'exists:property_types,id'],
+            'agency_id' => ['prohibited'],
+            'property_type_id' => ['sometimes', 'nullable', 'integer', $this->globalOrTenantExists('property_types')],
             'reference' => ['sometimes', 'nullable', 'string', 'max:255'],
             'title' => ['sometimes', 'nullable', 'string', 'max:255'],
             'description' => ['sometimes', 'nullable', 'string'],
@@ -40,7 +47,7 @@ class UpdatePropertyRequest extends FormRequest
             'is_published' => ['sometimes', 'nullable', 'boolean'],
             'confidentiality_level' => ['sometimes', 'nullable', 'string', 'max:255'],
             'owners' => ['sometimes', 'nullable', 'array'],
-            'owners.*.owner_id' => ['required_with:owners', 'integer', 'exists:owners,id'],
+            'owners.*.owner_id' => ['required_with:owners', 'integer', $this->tenantExists('owners')],
             'owners.*.ownership_percentage' => ['nullable', 'numeric', 'min:0', 'max:100'],
             'owners.*.is_primary_owner' => ['nullable', 'boolean'],
             'owners.*.notes' => ['nullable', 'string'],
@@ -62,7 +69,7 @@ class UpdatePropertyRequest extends FormRequest
             'documents.*.original_name' => ['required_with:documents', 'string', 'max:255'],
             'documents.*.notes' => ['nullable', 'string'],
             'availabilities' => ['sometimes', 'nullable', 'array'],
-            'availabilities.*.rental_unit_id' => ['nullable', 'integer', 'exists:rental_units,id'],
+            'availabilities.*.rental_unit_id' => ['nullable', 'integer', $this->tenantExists('rental_units')],
             'availabilities.*.availability_type' => ['required_with:availabilities', 'string', 'max:255'],
             'availabilities.*.start_at' => ['required_with:availabilities', 'date'],
             'availabilities.*.end_at' => ['required_with:availabilities', 'date', 'after_or_equal:availabilities.*.start_at'],

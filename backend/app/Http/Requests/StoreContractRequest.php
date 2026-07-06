@@ -4,13 +4,17 @@ declare(strict_types=1);
 
 namespace App\Http\Requests;
 
+use App\Http\Requests\Concerns\UsesTenantValidationRules;
+use App\Models\Contract;
 use Illuminate\Foundation\Http\FormRequest;
 
 class StoreContractRequest extends FormRequest
 {
+    use UsesTenantValidationRules;
+
     public function authorize(): bool
     {
-        return true;
+        return $this->user()?->can('create', Contract::class) ?? false;
     }
 
     /**
@@ -19,10 +23,10 @@ class StoreContractRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'agency_id' => ['required', 'integer', 'exists:agencies,id'],
-            'property_id' => ['nullable', 'integer', 'exists:properties,id'],
-            'previous_contract_id' => ['nullable', 'integer', 'exists:contracts,id'],
-            'assigned_agent_id' => ['nullable', 'integer', 'exists:users,id'],
+            'agency_id' => ['prohibited'],
+            'property_id' => ['nullable', 'integer', $this->tenantExists('properties')],
+            'previous_contract_id' => ['nullable', 'integer', $this->tenantExists('contracts')],
+            'assigned_agent_id' => ['nullable', 'integer', $this->sameAgencyUserExists()],
             'contract_number' => ['nullable', 'string', 'max:255'],
             'contract_type' => ['required', 'string', 'max:255'],
             'status' => ['nullable', 'string', 'max:255'],
@@ -41,8 +45,8 @@ class StoreContractRequest extends FormRequest
             'owner_amount_is_manual' => ['nullable', 'boolean'],
             'notes' => ['nullable', 'string'],
             'parties' => ['nullable', 'array'],
-            'parties.*.owner_id' => ['nullable', 'integer', 'exists:owners,id'],
-            'parties.*.client_id' => ['nullable', 'integer', 'exists:clients,id'],
+            'parties.*.owner_id' => ['nullable', 'integer', $this->tenantExists('owners')],
+            'parties.*.client_id' => ['nullable', 'integer', $this->tenantExists('clients')],
             'parties.*.party_type' => ['required_with:parties', 'string', 'max:255'],
             'parties.*.role' => ['nullable', 'string', 'max:255'],
             'parties.*.ownership_percentage' => ['nullable', 'numeric', 'min:0', 'max:100'],

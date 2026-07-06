@@ -4,13 +4,20 @@ declare(strict_types=1);
 
 namespace App\Http\Requests;
 
+use App\Http\Requests\Concerns\UsesTenantValidationRules;
+use App\Models\RentalUnit;
 use Illuminate\Foundation\Http\FormRequest;
 
 class UpdateRentalUnitRequest extends FormRequest
 {
+    use UsesTenantValidationRules;
+
     public function authorize(): bool
     {
-        return true;
+        $rentalUnit = $this->route('rentalUnit');
+
+        return $rentalUnit instanceof RentalUnit
+            && ($this->user()?->can('update', $rentalUnit) ?? false);
     }
 
     /**
@@ -19,11 +26,11 @@ class UpdateRentalUnitRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'agency_id' => ['sometimes', 'integer', 'exists:agencies,id'],
-            'property_id' => ['sometimes', 'nullable', 'integer', 'exists:properties,id'],
-            'contract_id' => ['sometimes', 'nullable', 'integer', 'exists:contracts,id'],
-            'previous_rental_unit_id' => ['sometimes', 'nullable', 'integer', 'exists:rental_units,id'],
-            'assigned_agent_id' => ['sometimes', 'nullable', 'integer', 'exists:users,id'],
+            'agency_id' => ['prohibited'],
+            'property_id' => ['sometimes', 'nullable', 'integer', $this->tenantExists('properties')],
+            'contract_id' => ['sometimes', 'nullable', 'integer', $this->tenantExists('contracts')],
+            'previous_rental_unit_id' => ['sometimes', 'nullable', 'integer', $this->tenantExists('rental_units')],
+            'assigned_agent_id' => ['sometimes', 'nullable', 'integer', $this->sameAgencyUserExists()],
             'rental_number' => ['sometimes', 'nullable', 'string', 'max:255'],
             'status' => ['sometimes', 'nullable', 'string', 'max:255'],
             'start_date' => ['sometimes', 'nullable', 'date'],
@@ -35,7 +42,7 @@ class UpdateRentalUnitRequest extends FormRequest
             'is_renewal' => ['sometimes', 'nullable', 'boolean'],
             'notes' => ['sometimes', 'nullable', 'string'],
             'parties' => ['sometimes', 'nullable', 'array'],
-            'parties.*.client_id' => ['nullable', 'integer', 'exists:clients,id'],
+            'parties.*.client_id' => ['nullable', 'integer', $this->tenantExists('clients')],
             'parties.*.party_type' => ['required_with:parties', 'string', 'max:255'],
             'parties.*.role' => ['nullable', 'string', 'max:255'],
             'parties.*.display_order' => ['nullable', 'integer', 'min:0'],

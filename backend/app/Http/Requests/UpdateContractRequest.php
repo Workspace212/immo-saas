@@ -4,13 +4,20 @@ declare(strict_types=1);
 
 namespace App\Http\Requests;
 
+use App\Http\Requests\Concerns\UsesTenantValidationRules;
+use App\Models\Contract;
 use Illuminate\Foundation\Http\FormRequest;
 
 class UpdateContractRequest extends FormRequest
 {
+    use UsesTenantValidationRules;
+
     public function authorize(): bool
     {
-        return true;
+        $contract = $this->route('contract');
+
+        return $contract instanceof Contract
+            && ($this->user()?->can('update', $contract) ?? false);
     }
 
     /**
@@ -19,10 +26,10 @@ class UpdateContractRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'agency_id' => ['sometimes', 'integer', 'exists:agencies,id'],
-            'property_id' => ['sometimes', 'nullable', 'integer', 'exists:properties,id'],
-            'previous_contract_id' => ['sometimes', 'nullable', 'integer', 'exists:contracts,id'],
-            'assigned_agent_id' => ['sometimes', 'nullable', 'integer', 'exists:users,id'],
+            'agency_id' => ['prohibited'],
+            'property_id' => ['sometimes', 'nullable', 'integer', $this->tenantExists('properties')],
+            'previous_contract_id' => ['sometimes', 'nullable', 'integer', $this->tenantExists('contracts')],
+            'assigned_agent_id' => ['sometimes', 'nullable', 'integer', $this->sameAgencyUserExists()],
             'contract_number' => ['sometimes', 'nullable', 'string', 'max:255'],
             'contract_type' => ['sometimes', 'nullable', 'string', 'max:255'],
             'status' => ['sometimes', 'nullable', 'string', 'max:255'],
@@ -41,8 +48,8 @@ class UpdateContractRequest extends FormRequest
             'owner_amount_is_manual' => ['sometimes', 'nullable', 'boolean'],
             'notes' => ['sometimes', 'nullable', 'string'],
             'parties' => ['sometimes', 'nullable', 'array'],
-            'parties.*.owner_id' => ['nullable', 'integer', 'exists:owners,id'],
-            'parties.*.client_id' => ['nullable', 'integer', 'exists:clients,id'],
+            'parties.*.owner_id' => ['nullable', 'integer', $this->tenantExists('owners')],
+            'parties.*.client_id' => ['nullable', 'integer', $this->tenantExists('clients')],
             'parties.*.party_type' => ['required_with:parties', 'string', 'max:255'],
             'parties.*.role' => ['nullable', 'string', 'max:255'],
             'parties.*.ownership_percentage' => ['nullable', 'numeric', 'min:0', 'max:100'],

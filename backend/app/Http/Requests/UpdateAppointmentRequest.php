@@ -4,13 +4,20 @@ declare(strict_types=1);
 
 namespace App\Http\Requests;
 
+use App\Http\Requests\Concerns\UsesTenantValidationRules;
+use App\Models\Appointment;
 use Illuminate\Foundation\Http\FormRequest;
 
 class UpdateAppointmentRequest extends FormRequest
 {
+    use UsesTenantValidationRules;
+
     public function authorize(): bool
     {
-        return true;
+        $appointment = $this->route('appointment');
+
+        return $appointment instanceof Appointment
+            && ($this->user()?->can('update', $appointment) ?? false);
     }
 
     /**
@@ -19,15 +26,15 @@ class UpdateAppointmentRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'agency_id' => ['sometimes', 'integer', 'exists:agencies,id'],
-            'property_id' => ['sometimes', 'nullable', 'integer', 'exists:properties,id'],
-            'client_id' => ['sometimes', 'nullable', 'integer', 'exists:clients,id'],
-            'owner_id' => ['sometimes', 'nullable', 'integer', 'exists:owners,id'],
-            'provider_id' => ['sometimes', 'nullable', 'integer', 'exists:providers,id'],
-            'contract_id' => ['sometimes', 'nullable', 'integer', 'exists:contracts,id'],
-            'mandate_id' => ['sometimes', 'nullable', 'integer', 'exists:mandates,id'],
-            'complaint_id' => ['sometimes', 'nullable', 'integer', 'exists:complaints,id'],
-            'collaboration_id' => ['sometimes', 'nullable', 'integer', 'exists:collaborations,id'],
+            'agency_id' => ['prohibited'],
+            'property_id' => ['sometimes', 'nullable', 'integer', $this->tenantExists('properties')],
+            'client_id' => ['sometimes', 'nullable', 'integer', $this->tenantExists('clients')],
+            'owner_id' => ['sometimes', 'nullable', 'integer', $this->tenantExists('owners')],
+            'provider_id' => ['sometimes', 'nullable', 'integer', $this->tenantExists('providers')],
+            'contract_id' => ['sometimes', 'nullable', 'integer', $this->tenantExists('contracts')],
+            'mandate_id' => ['sometimes', 'nullable', 'integer', $this->tenantExists('mandates')],
+            'complaint_id' => ['sometimes', 'nullable', 'integer', $this->tenantExists('complaints')],
+            'collaboration_id' => ['sometimes', 'nullable', 'integer', $this->tenantExists('collaborations')],
             'appointment_number' => ['sometimes', 'nullable', 'string', 'max:255'],
             'appointment_type' => ['sometimes', 'nullable', 'string', 'max:255'],
             'title' => ['sometimes', 'nullable', 'string', 'max:255'],
@@ -43,10 +50,10 @@ class UpdateAppointmentRequest extends FormRequest
             'sync_status' => ['sometimes', 'nullable', 'string', 'max:255'],
             'last_synced_at' => ['sometimes', 'nullable', 'date'],
             'participants' => ['sometimes', 'nullable', 'array'],
-            'participants.*.user_id' => ['nullable', 'integer', 'exists:users,id'],
-            'participants.*.client_id' => ['nullable', 'integer', 'exists:clients,id'],
-            'participants.*.owner_id' => ['nullable', 'integer', 'exists:owners,id'],
-            'participants.*.provider_id' => ['nullable', 'integer', 'exists:providers,id'],
+            'participants.*.user_id' => ['nullable', 'integer', $this->sameAgencyUserExists()],
+            'participants.*.client_id' => ['nullable', 'integer', $this->tenantExists('clients')],
+            'participants.*.owner_id' => ['nullable', 'integer', $this->tenantExists('owners')],
+            'participants.*.provider_id' => ['nullable', 'integer', $this->tenantExists('providers')],
             'participants.*.participant_type' => ['required_with:participants', 'string', 'max:255'],
             'participants.*.name' => ['nullable', 'string', 'max:255'],
             'participants.*.email' => ['nullable', 'email', 'max:255'],
@@ -54,7 +61,7 @@ class UpdateAppointmentRequest extends FormRequest
             'participants.*.status' => ['nullable', 'string', 'max:255'],
             'participants.*.notes' => ['nullable', 'string'],
             'reminders' => ['sometimes', 'nullable', 'array'],
-            'reminders.*.user_id' => ['nullable', 'integer', 'exists:users,id'],
+            'reminders.*.user_id' => ['nullable', 'integer', $this->sameAgencyUserExists()],
             'reminders.*.reminder_type' => ['required_with:reminders', 'string', 'max:255'],
             'reminders.*.remind_at' => ['required_with:reminders', 'date'],
             'reminders.*.status' => ['nullable', 'string', 'max:255'],
