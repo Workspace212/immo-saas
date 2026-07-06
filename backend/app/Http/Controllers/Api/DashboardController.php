@@ -12,12 +12,15 @@ use App\Models\AppNotification;
 use App\Models\DashboardFavoriteFilter;
 use App\Models\DashboardLayout;
 use App\Models\DashboardSnapshot;
+use App\Models\DashboardWidget;
 use App\Models\User;
 use App\Services\DashboardService;
+use App\Support\TenantContext;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Gate;
 
 class DashboardController extends Controller
 {
@@ -27,6 +30,8 @@ class DashboardController extends Controller
 
     public function overview(Request $request): JsonResponse
     {
+        $this->authorizeDashboardView($request, requireAgencyWide: true);
+
         $user = $this->currentUser($request);
         $dashboard = $this->dashboardService->getDashboard($user);
         $statistics = $dashboard['statistics'] ?? [];
@@ -69,6 +74,8 @@ class DashboardController extends Controller
 
     public function statistics(Request $request): JsonResponse
     {
+        $this->authorizeDashboardView($request, requireAgencyWide: true);
+
         $agencyId = $this->agencyId($request);
 
         return response()->json([
@@ -78,6 +85,8 @@ class DashboardController extends Controller
 
     public function charts(Request $request): JsonResponse
     {
+        $this->authorizeDashboardView($request, requireAgencyWide: true);
+
         $agencyId = $this->agencyId($request);
 
         return response()->json([
@@ -87,6 +96,8 @@ class DashboardController extends Controller
 
     public function agenda(Request $request): JsonResponse
     {
+        $this->authorizeDashboardView($request, requireAgencyWide: true);
+
         $dashboard = $this->dashboardService->getDashboard($this->currentUser($request));
 
         return response()->json([
@@ -96,6 +107,8 @@ class DashboardController extends Controller
 
     public function notifications(Request $request): JsonResponse
     {
+        $this->authorizeDashboardView($request);
+
         $user = $this->currentUser($request);
 
         return response()->json([
@@ -109,13 +122,16 @@ class DashboardController extends Controller
 
     public function favorites(Request $request): JsonResponse
     {
+        $this->authorizeDashboardView($request);
+
         $user = $this->currentUser($request);
+        $agencyId = $this->agencyId($request);
 
         return response()->json([
             'data' => DashboardFavoriteFilter::query()
                 ->where('user_id', $user->getKey())
-                ->where(function ($query) use ($user): void {
-                    $query->where('agency_id', $user->agency_id)
+                ->where(function ($query) use ($agencyId): void {
+                    $query->where('agency_id', $agencyId)
                         ->orWhereNull('agency_id');
                 })
                 ->orderBy('display_order')
@@ -126,7 +142,10 @@ class DashboardController extends Controller
 
     public function layouts(Request $request): JsonResponse
     {
+        $this->authorizeDashboardView($request);
+
         $user = $this->currentUser($request);
+        $agencyId = $this->agencyId($request);
 
         return response()->json([
             'data' => DashboardLayout::query()
@@ -134,8 +153,8 @@ class DashboardController extends Controller
                     $query->where('user_id', $user->getKey())
                         ->orWhere('is_shared', true);
                 })
-                ->where(function ($query) use ($user): void {
-                    $query->where('agency_id', $user->agency_id)
+                ->where(function ($query) use ($agencyId): void {
+                    $query->where('agency_id', $agencyId)
                         ->orWhereNull('agency_id');
                 })
                 ->orderByDesc('is_default')
@@ -146,6 +165,8 @@ class DashboardController extends Controller
 
     public function snapshots(Request $request): AnonymousResourceCollection
     {
+        Gate::authorize('viewAny', DashboardSnapshot::class);
+
         $user = $this->currentUser($request);
 
         return DashboardSnapshotResource::collection(
@@ -164,9 +185,11 @@ class DashboardController extends Controller
 
     public function storeSnapshot(StoreDashboardSnapshotRequest $request): JsonResponse
     {
+        Gate::authorize('create', DashboardSnapshot::class);
+
         $snapshot = $this->dashboardService->saveSnapshot(
             $this->currentUser($request),
-            $this->snapshotPayload($request->validated())
+            $this->snapshotPayload($request->validated(), request: $request)
         );
 
         return (new DashboardSnapshotResource($snapshot->load('creator')))
@@ -176,9 +199,11 @@ class DashboardController extends Controller
 
     public function updateSnapshot(UpdateDashboardSnapshotRequest $request, DashboardSnapshot $snapshot): DashboardSnapshotResource
     {
+        Gate::authorize('update', $snapshot);
+
         $updated = DB::transaction(function () use ($request, $snapshot): DashboardSnapshot {
             // TODO: Add authorization and immutable snapshot retention rules.
-            $snapshot->fill($this->snapshotPayload($request->validated(), $snapshot));
+            $snapshot->fill($this->snapshotPayload($request->validated(), $snapshot, $request));
             $snapshot->save();
 
             return $snapshot->refresh();
@@ -189,6 +214,8 @@ class DashboardController extends Controller
 
     public function deleteSnapshot(DashboardSnapshot $snapshot): JsonResponse
     {
+        Gate::authorize('delete', $snapshot);
+
         DB::transaction(function () use ($snapshot): void {
             // TODO: Prevent deletion of audit snapshots generated by scheduled reporting.
             $snapshot->delete();
@@ -208,14 +235,37 @@ class DashboardController extends Controller
 
     private function agencyId(Request $request): int
     {
-        return (int) ($request->integer('agency_id') ?: $this->currentUser($request)->agency_id);
+        $agencyId = app(TenantContext::class)->agencyId();
+        $user = $this->currentUser($request);
+
+        if ($agencyId === null) {
+            $agencyId = $user->agency_id === null ? null : (int) $user->agency_id;
+        }
+
+        abort_if($agencyId === null, 403, 'Tenant agency is required.');
+
+        return $agencyId;
+    }
+
+    private function authorizeDashboardView(Request $request, bool $requireAgencyWide = false): void
+    {
+        Gate::authorize('viewAny', DashboardWidget::class);
+
+        if (! $requireAgencyWide) {
+            return;
+        }
+
+        $user = $this->currentUser($request);
+
+        // TODO: DashboardService currently builds agency-wide metrics; add role-aware service scoping before enabling agents/employees.
+        abort_unless($user->hasAnyRole(['manager', 'assistant']), 403, 'Dashboard metrics require agency-wide dashboard access.');
     }
 
     /**
      * @param array<string, mixed> $data
      * @return array<string, mixed>
      */
-    private function snapshotPayload(array $data, ?DashboardSnapshot $snapshot = null): array
+    private function snapshotPayload(array $data, ?DashboardSnapshot $snapshot = null, ?Request $request = null): array
     {
         $metadata = $snapshot?->metadata ?? [];
         $metadata = is_array($metadata) ? $metadata : [];
@@ -230,8 +280,7 @@ class DashboardController extends Controller
             $metadata = array_merge($metadata, $data['metadata']);
         }
 
-        return array_filter([
-            'agency_id' => $data['agency_id'] ?? null,
+        $payload = array_filter([
             'snapshot_key' => $data['snapshot_name'] ?? null,
             'period_type' => $data['period'] ?? null,
             'snapshot_date' => $data['snapshot_date'] ?? null,
@@ -239,6 +288,12 @@ class DashboardController extends Controller
             'comparison_values' => $data['comparison'] ?? null,
             'metadata' => $metadata,
         ], static fn (mixed $value): bool => $value !== null);
+
+        if ($request !== null) {
+            $payload['agency_id'] = $this->agencyId($request);
+        }
+
+        return $payload;
     }
 
     private function value(array $source, string $key, mixed $fallback = null): mixed
